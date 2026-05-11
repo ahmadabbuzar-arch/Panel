@@ -1,6 +1,6 @@
 // api/smmsbi.js — SMMSBI API Proxy + Order Placement
 const SMMSBI_URL = 'https://smmsbi.com/api/v2';
-const API_KEY    = process.env.SMMSBI_API_KEY || 'c9d6dd76d62b31749e22dc8fc54b4033';
+const API_KEY    = process.env.SMMSBI_API_KEY || '';
 
 let USERS  = global._sapanel_users  || (global._sapanel_users  = {});
 let ORDERS = global._sapanel_orders || (global._sapanel_orders = []);
@@ -14,10 +14,30 @@ module.exports = async (req, res) => {
   const body   = req.method === 'POST' ? (req.body || {}) : (req.query || {});
   const action = body.action;
 
+  // ── GET BALANCE (Test Connection) ──
+  if (action === 'balance') {
+    const key = body.key || API_KEY;
+    if (!key) return res.status(400).json({ error: 'API key nahi hai' });
+    try {
+      const params = new URLSearchParams({ key, action: 'balance' });
+      const r = await fetch(SMMSBI_URL, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body   : params.toString()
+      });
+      const data = await r.json();
+      return res.status(200).json(data);
+    } catch (err) {
+      return res.status(500).json({ error: 'Balance fetch failed: ' + err.message });
+    }
+  }
+
   // ── GET SERVICES ──
   if (action === 'services' || !action) {
+    const key = body.key || API_KEY;
+    if (!key) return res.status(400).json({ error: 'API key nahi hai' });
     try {
-      const params = new URLSearchParams({ key: API_KEY, action: 'services' });
+      const params = new URLSearchParams({ key, action: 'services' });
       const r      = await fetch(SMMSBI_URL, {
         method : 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -30,61 +50,21 @@ module.exports = async (req, res) => {
   }
 
   // ── PLACE ORDER ──
-  if (action === 'order') {
-    const { email, service, link, quantity } = body;
-    if (!email || !service || !link || !quantity)
-      return res.status(400).json({ error: 'email, service, link, quantity sab chahiye' });
-
-    USERS = global._sapanel_users || {};
-    const userKey = email.toLowerCase().trim();
-    const user    = USERS[userKey];
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    // Get service price
-    let serviceInfo = null;
+  if (action === 'add') {
+    const key = body.key || API_KEY;
+    const { service, link, quantity } = body;
+    if (!key || !service || !link || !quantity)
+      return res.status(400).json({ error: 'key, service, link, quantity sab chahiye' });
     try {
-      const sp       = new URLSearchParams({ key: API_KEY, action: 'services' });
-      const sr       = await fetch(SMMSBI_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: sp.toString() });
-      const services = await sr.json();
-      serviceInfo    = Array.isArray(services) ? services.find(s => String(s.service) === String(service)) : null;
-    } catch (_) {}
-
-    const pricePerK = serviceInfo ? parseFloat(serviceInfo.rate) : 0;
-    const qty       = parseInt(quantity);
-    const cost      = parseFloat(((pricePerK * qty) / 1000).toFixed(2));
-
-    if (cost > 0 && user.balance < cost)
-      return res.status(400).json({ error: `Balance kam hai. Required: ₹${cost.toFixed(2)}, Available: ₹${user.balance.toFixed(2)}` });
-
-    // Place on SMMSBI
-    try {
-      const params = new URLSearchParams({ key: API_KEY, action: 'add', service, link, quantity: String(qty) });
-      const r      = await fetch(SMMSBI_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
+      const params = new URLSearchParams({ key, action: 'add', service, link, quantity: String(quantity) });
+      const r = await fetch(SMMSBI_URL, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body   : params.toString()
+      });
       const result = await r.json();
-
       if (result.error) return res.status(400).json({ error: result.error });
-
-      // Deduct balance
-      if (cost > 0) user.balance = parseFloat((user.balance - cost).toFixed(2));
-      user.orders = (user.orders || 0) + 1;
-      global._sapanel_users = USERS;
-
-      const orderRecord = {
-        id          : result.order,
-        smmsbiId    : result.order,
-        email       : userKey,
-        service,
-        serviceName : serviceInfo?.name || 'Service #' + service,
-        link,
-        quantity    : qty,
-        cost,
-        status      : 'pending',
-        createdAt   : new Date().toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-      };
-      ORDERS.push(orderRecord);
-      global._sapanel_orders = ORDERS;
-
-      return res.status(200).json({ success: true, order: result.order, cost, newBalance: user.balance });
+      return res.status(200).json(result);
     } catch (err) {
       return res.status(500).json({ error: 'Order failed: ' + err.message });
     }
@@ -92,15 +72,17 @@ module.exports = async (req, res) => {
 
   // ── ORDER STATUS ──
   if (action === 'status') {
+    const key = body.key || API_KEY;
     const { order } = body;
     if (!order) return res.status(400).json({ error: 'order ID chahiye' });
     try {
-      const params = new URLSearchParams({ key: API_KEY, action: 'status', order });
-      const r      = await fetch(SMMSBI_URL, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString() });
-      const data   = await r.json();
-      const local  = ORDERS.find(o => String(o.smmsbiId) === String(order));
-      if (local && data.status) local.status = data.status.toLowerCase();
-      return res.status(200).json(data);
+      const params = new URLSearchParams({ key, action: 'status', order });
+      const r = await fetch(SMMSBI_URL, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body   : params.toString()
+      });
+      return res.status(200).json(await r.json());
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
